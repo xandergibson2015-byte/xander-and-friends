@@ -1,0 +1,226 @@
+<!doctype html>
+<!--
+  Safe Buddy — single-file HTML desktop-style assistant
+  - Runs entirely in the browser (no servers, no tracking)
+  - Save as safe-buddy.html and open in any modern browser
+  - Uses Web Speech API for local TTS (no external services)
+  - Drag the buddy by grabbing its header; double-click for a cheeky message
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Safe Buddy — single-file</title>
+  <style>
+    :root{ --bg:transparent; --card-bg: #ffffffee; --accent: #7b4ec3; --accent-2:#8e5ff0 }
+    html,body{height:100%;margin:0;background:var(--bg);font-family:system-ui,Segoe UI,Roboto,Arial;color:#111}
+    /* Container centers the buddy so it looks like a floating desktop widget */
+    .container{height:100%;display:flex;align-items:flex-start;justify-content:flex-start;padding:18px}
+
+    .buddy{
+      width:380px;max-width:92vw;height:480px;background:linear-gradient(180deg, rgba(255,255,255,0.95), rgba(250,250,255,0.92));
+      border-radius:18px;box-shadow:0 10px 30px rgba(0,0,0,0.18);position:relative;overflow:visible;user-select:none;
+      touch-action:none;display:flex;flex-direction:column;align-items:center;
+    }
+
+    /* header used as drag handle */
+    .buddy-header{width:100%;padding:10px 12px;border-bottom:1px solid rgba(0,0,0,0.05);display:flex;align-items:center;gap:8px;cursor:grab}
+    .title{font-weight:600;font-size:14px;color:#222}
+    .spacer{flex:1}
+    .control{background:transparent;border:0;padding:4px 8px;border-radius:8px;cursor:pointer}
+
+    .svg-wrap{width:240px;height:240px;margin-top:8px;-webkit-user-drag:none}
+    svg{width:100%;height:100%;display:block}
+
+    #bubble{position:absolute;top:56px;left:18px;max-width:260px;padding:10px 12px;border-radius:14px;background:var(--card-bg);color:#222;box-shadow:0 6px 20px rgba(0,0,0,0.12);font-size:14px;display:none}
+
+    .controls{margin-top:auto;margin-bottom:14px;display:flex;gap:8px;align-items:center;padding:0 12px 12px 12px}
+    input[type=text]{flex:1;padding:8px 10px;border-radius:8px;border:1px solid rgba(0,0,0,0.08);outline:none}
+    button.btn{padding:8px 10px;border-radius:8px;border:1px solid rgba(0,0,0,0.08);background:var(--card-bg);cursor:pointer}
+
+    /* small helper text */
+    .footer-note{font-size:12px;color:#555;padding:8px 12px}
+
+    /* mouth animation helper class */
+    .mouth-anim{transform-origin: 100px 75px}
+
+    @media (max-width:420px){ .buddy{width:92vw;height:62vh} }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div id="buddy" class="buddy" role="dialog" aria-label="Safe Buddy">
+      <div class="buddy-header" id="dragHandle">
+        <div class="title">Safe Buddy</div>
+        <div class="spacer"></div>
+        <button id="minBtn" class="control" title="Hide buddy">—</button>
+        <button id="closeBtn" class="control" title="Close">✕</button>
+      </div>
+
+      <div id="bubble" aria-live="polite"></div>
+
+      <div class="svg-wrap" aria-hidden="true">
+        <!-- simple original SVG character (not trademarked) -->
+        <svg id="buddySVG" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="100" cy="110" rx="70" ry="70" fill="#7b4ec3"/>
+          <ellipse cx="100" cy="60" rx="50" ry="45" fill="#8e5ff0"/>
+          <circle cx="80" cy="55" r="6" fill="#fff"/>
+          <circle cx="80" cy="56" r="3" fill="#222"/>
+          <circle cx="120" cy="55" r="6" fill="#fff"/>
+          <circle cx="120" cy="56" r="3" fill="#222"/>
+          <path id="mouth" class="mouth-anim" d="M80 75 Q100 85 120 75 Q100 95 80 75" fill="#3a0f5b" opacity="0.95"/>
+        </svg>
+      </div>
+
+      <div class="controls">
+        <input id="textIn" type="text" placeholder="Type something for me to say..." aria-label="Text to speak" />
+        <button id="speakBtn" class="btn">Speak</button>
+        <button id="waveBtn" class="btn" title="Wave">👋</button>
+      </div>
+
+      <div class="footer-note">Privacy: runs locally · no telemetry · uses your browser's TTS</div>
+    </div>
+  </div>
+
+  <script>
+    // Safe Buddy single-file behavior
+    (function(){
+      const buddy = document.getElementById('buddy');
+      const dragHandle = document.getElementById('dragHandle');
+      const bubble = document.getElementById('bubble');
+      const speakBtn = document.getElementById('speakBtn');
+      const textIn = document.getElementById('textIn');
+      const waveBtn = document.getElementById('waveBtn');
+      const mouth = document.getElementById('mouth');
+      const minBtn = document.getElementById('minBtn');
+      const closeBtn = document.getElementById('closeBtn');
+
+      // Show temporary message bubble
+      function showBubble(text, ms=3200){
+        bubble.textContent = text;
+        bubble.style.display = 'block';
+        clearTimeout(bubble._t);
+        bubble._t = setTimeout(()=> bubble.style.display = 'none', ms);
+      }
+
+      // Simple mouth animation
+      function animateMouth(dur=700){
+        if (!mouth) return;
+        mouth.animate([
+          { transform: 'scaleY(1)' },
+          { transform: 'scaleY(0.35)' },
+          { transform: 'scaleY(1)' }
+        ], { duration: dur, iterations: 1 });
+      }
+
+      // TTS (local browser)
+      function speakText(text){
+        if (!('speechSynthesis' in window)){
+          showBubble('TTS not supported in this browser.');
+          return;
+        }
+        const ut = new SpeechSynthesisUtterance(text);
+        // Keep it local: don't set voice to any external provider
+        ut.rate = 1; ut.pitch = 1;
+        ut.onstart = ()=> animateMouth(700);
+        window.speechSynthesis.speak(ut);
+        showBubble(text, Math.max(3000, text.length*70));
+      }
+
+      speakBtn.addEventListener('click', ()=>{
+        const t = textIn.value.trim();
+        if (!t) { showBubble('Type something for me to say!'); return; }
+        speakText(t);
+        textIn.value = '';
+      });
+
+      textIn.addEventListener('keydown', (e)=>{ if (e.key === 'Enter') speakBtn.click(); });
+
+      waveBtn.addEventListener('click', ()=>{
+        const svg = document.getElementById('buddySVG');
+        svg.animate([
+          { transform: 'translateX(0)' },
+          { transform: 'translateX(-8px)' },
+          { transform: 'translateX(8px)' },
+          { transform: 'translateX(0)' }
+        ], { duration: 600, iterations: 1 });
+        showBubble("Hello — I'm your local buddy!", 2600);
+      });
+
+      // Minimize: hide content but keep header visible
+      minBtn.addEventListener('click', ()=>{
+        const isMin = buddy.classList.toggle('minimized');
+        if (isMin){
+          buddy.style.height = '44px';
+          buddy.querySelector('.svg-wrap').style.display = 'none';
+          buddy.querySelector('.controls').style.display = 'none';
+          buddy.querySelector('.footer-note').style.display = 'none';
+        } else {
+          buddy.style.height = '';
+          buddy.querySelector('.svg-wrap').style.display = '';
+          buddy.querySelector('.controls').style.display = '';
+          buddy.querySelector('.footer-note').style.display = '';
+        }
+      });
+
+      // Close: remove from DOM (can't close browser tab programmatically reliably)
+      closeBtn.addEventListener('click', ()=>{
+        buddy.remove();
+      });
+
+      // Double-click for a cheeky message
+      buddy.addEventListener('dblclick', ()=> showBubble('Double-click detected — beep boop!', 2000));
+
+      // Dragging within viewport (pointer events)
+      let dragging = false, startX=0, startY=0, baseLeft=0, baseTop=0;
+      dragHandle.addEventListener('pointerdown', (ev)=>{
+        ev.preventDefault();
+        dragging = true;
+        dragHandle.setPointerCapture(ev.pointerId);
+        startX = ev.clientX; startY = ev.clientY;
+        const rect = buddy.getBoundingClientRect();
+        baseLeft = rect.left; baseTop = rect.top;
+        dragHandle.style.cursor = 'grabbing';
+      });
+
+      window.addEventListener('pointermove', (ev)=>{
+        if (!dragging) return;
+        let dx = ev.clientX - startX; let dy = ev.clientY - startY;
+        let left = baseLeft + dx; let top = baseTop + dy;
+        // keep buddy inside viewport
+        const vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+        const vh = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+        const r = buddy.getBoundingClientRect();
+        left = Math.min(Math.max(6, left), vw - r.width - 6);
+        top = Math.min(Math.max(6, top), vh - r.height - 6);
+        buddy.style.position = 'fixed';
+        buddy.style.left = left + 'px';
+        buddy.style.top = top + 'px';
+      });
+
+      window.addEventListener('pointerup', (ev)=>{
+        if (!dragging) return;
+        dragging = false;
+        try{ dragHandle.releasePointerCapture(ev.pointerId); }catch(e){}
+        dragHandle.style.cursor = 'grab';
+      });
+
+      // Accessibility: keyboard shortcut to speak default phrase (Alt+S)
+      window.addEventListener('keydown', (e)=>{
+        if (e.altKey && e.key.toLowerCase() === 's'){
+          speakText('You triggered the quick speak shortcut.');
+        }
+      });
+
+      // Start with a friendly greeting
+      setTimeout(()=> showBubble('Hi — I run locally and collect no data!', 3200), 700);
+
+      // Prevent accidental form submission/navigation while typing
+      window.addEventListener('beforeunload', (ev)=>{
+        // no-op: leaving page is allowed; this is just here if you later add persistent data
+      });
+
+    })();
+  </script>
+</body>
+</html>
